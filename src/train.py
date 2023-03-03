@@ -1,9 +1,10 @@
-import torch.nn as nn
-import argparse
 from modules.models import Trainer, Dataset, TrainingArguments, Model
 
+import torch.nn as nn
+import argparse
 
-def main():
+
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset',
                         type=str,
@@ -48,22 +49,22 @@ def main():
                         type=int,
                         default=100,
                         help="evaluate model on test set every eval_freq iterations")
-    args = parser.parse_args()
+    _args = parser.parse_args()
 
+    return _args
+
+
+def main(args):
+    model = Model(args)
     criterion = nn.CrossEntropyLoss()
-    model = Model(args.model, args.num_classes, args.feature_extract)
-    training_args = TrainingArguments(
-        args.batch_size, args.num_epochs, criterion,
-        model, args.gpu_id, args.patience,
-        args.lr, args.eval_freq)
-    dataset = Dataset(
-        args.dataset, training_args, model,
-        apply_augmentation=args.augment, num_workers=args.num_workers)
+    training_args = TrainingArguments(args, criterion, model)
+    dataset = Dataset(args, training_args, model)
     test_dataloader = dataset.get_test_dataloader()
-    trainer = Trainer(training_args, dataset, model)
+    trainer = Trainer(args, training_args, dataset, model)
     training_stats_database, best_acc = trainer.train()
     trainer.save_checkpoints(training_stats_database, best_acc, test_dataloader)
 
 
 if __name__ == "__main__":
-    main()
+    cli_args = parse_args()
+    main(cli_args)

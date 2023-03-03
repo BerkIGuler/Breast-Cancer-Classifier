@@ -1,4 +1,5 @@
 from utils import Plotter
+import logger
 
 import torch
 import torch.nn as nn
@@ -10,29 +11,23 @@ import os
 import copy
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.metrics import classification_report
-from loguru import logger
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-
 MAX_LOSS = 1000000
-
-logger.add(
-    "logs.log", format="{time} {level} {message}",
-    level="INFO", mode="w")
 
 
 class Model:
 
-    def __init__(
-            self, model_name, num_classes, feature_extract=0, use_pretrained=True
-    ):
-        self.model_name = model_name
-        self.feature_extract = feature_extract
-        self.num_classes = num_classes
+    def __init__(self, args, use_pretrained=True):
+        self.model_name = args.model
+        self.feature_extract = args.feature_extract
+        self.num_classes = args.num_classes
         self.model, self.input_size = self.initialize_model(
-            model_name, num_classes, feature_extract, use_pretrained
-        )
+            args.model, args.num_classes,
+            args.feature_extract, use_pretrained)
+
+        self.logger = logger.get_global_logger(args, name=__name__)
 
     def initialize_model(
             self, model_name, num_classes, feature_extract, use_pretrained
@@ -94,7 +89,7 @@ class Model:
         else:
             raise ValueError("invalid model name")
 
-        logger.info(f"Initialized the model {model_name}:")
+        self.logger.info(f"Initialized the model {model_name}:")
         return model, input_size
 
     @staticmethod
@@ -115,33 +110,29 @@ class Model:
 
 
 class TrainingArguments:
-    def __init__(
-            self, batch_size, num_epochs, criterion, model_instance,
-            gpu_id, early_stop_patience, lr, evaluate_every_n_iter
-    ):
-        self.batch_size = batch_size
-        self.num_epochs = num_epochs
+    def __init__(self, args, criterion, model_instance):
+        self.batch_size = args.batch_size
+        self.num_epochs = args.num_epochs
         self.criterion = criterion
-        self.gpu_id = gpu_id
+        self.gpu_id = args.gpu_id
         self.optimizer = optim.Adam(
             model_instance.get_params_to_update(),
-            lr, betas=(0.9, 0.999), eps=1e-08)
-        self.patience = early_stop_patience
-        self.evaluate_every_n_iter = evaluate_every_n_iter
+            args.lr, betas=(0.9, 0.999), eps=1e-08)
+        self.patience = args.patience
+        self.evaluate_every_n_iter = args.eval_freq
 
 
 class Dataset:
-    def __init__(
-            self, dataset_name, training_args_instance, model_instance,
-            apply_augmentation=0, num_workers=4):
+    def __init__(self, args, training_args_instance, model_instance):
         self.training_args = training_args_instance
-        self.apply_augmentation = apply_augmentation
+        self.apply_augmentation = args.augment
         self.model = model_instance
-        self.dataset_name = dataset_name
-        self.num_workers = num_workers
-        self.data_transforms = self._get_data_transforms(apply_augmentation)
-        self.dataset_path = self._get_dataset_path(dataset_name)
+        self.dataset_name = args.dataset
+        self.num_workers = args.num_workers
+        self.data_transforms = self._get_data_transforms(args.augment)
+        self.dataset_path = self._get_dataset_path(args.dataset)
         self.dataloaders = self._get_data_loaders()
+        self.logger = logger.get_global_logger(args, name=__name__)
 
     def _get_data_transforms(self, apply_augmentation):
         if apply_augmentation == 1:
@@ -211,16 +202,18 @@ class Dataset:
 
 class Trainer:
     def __init__(
-            self, training_args_instance,
+            self, args, training_args_instance,
             dataset_instance, model_instance):
 
         self.device = torch.device(f"cuda:{training_args_instance.gpu_id}" if
                                    torch.cuda.is_available() else "cpu")
-        logger.info("training device set as:", self.device)
+
         self.training_args = training_args_instance
         self.dataset = dataset_instance
         model_instance.model = model_instance.model.to(self.device)
         self.model = model_instance
+        self.logger = logger.get_global_logger(args, name=__name__)
+        self.logger.info("training device set as:", self.device)
 
     def train(self):
         since = time.time()
@@ -240,7 +233,7 @@ class Trainer:
             if quit_flag:
                 break
 
-            logger.info(f'Epoch {epoch}/{self.training_args.num_epochs - 1}')
+            self.logger.info(f'Epoch {epoch}/{self.training_args.num_epochs - 1}')
             running_loss_train = 0.0
             running_corrects_train = 0
             num_iter_train = 0
@@ -309,18 +302,18 @@ class Trainer:
                     train_acc_history.append(iter_acc_train)
                     train_loss_history.append(iter_loss_train)
 
-                    logger.info(f"EPOCH {epoch}/{self.training_args.num_epochs - 1},"
-                                + f" ITER {num_iter_train}, DATASET {self.dataset.dataset_name}")
-                    logger.info(f"Training Set\t\t Accuracy: {iter_acc_train:.4f}"
-                                + f"\t\t Loss: {iter_loss_train:.4f}")
-                    logger.info(f"Test Set\t\t Accuracy: {iter_acc_test:.4f}\t\t"
-                                + f" Loss: {iter_loss_test:.4f}")
-                    logger.info("remaining_patience:", remaining_patience)
+                    self.logger.info(f"EPOCH {epoch}/{self.training_args.num_epochs - 1},"
+                                     + f" ITER {num_iter_train}, DATASET {self.dataset.dataset_name}")
+                    self.logger.info(f"Training Set\t\t Accuracy: {iter_acc_train:.4f}"
+                                     + f"\t\t Loss: {iter_loss_train:.4f}")
+                    self.logger.info(f"Test Set\t\t Accuracy: {iter_acc_test:.4f}\t\t"
+                                     + f" Loss: {iter_loss_test:.4f}")
+                    self.logger.info("remaining_patience:", remaining_patience)
 
         time_elapsed = time.time() - since
-        logger.info('Training complete in'
-                    + f'{time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
-        logger.info(f'Best Test Acc: {best_loss_acc:.4f}')
+        self.logger.info('Training complete in'
+                         + f'{time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+        self.logger.info(f'Best Test Acc: {best_loss_acc:.4f}')
         self.model.model.load_state_dict(best_model_wts)
 
         database = {
@@ -362,7 +355,7 @@ class Trainer:
         Plotter.plot_double_acc(database['train acc'], database['val acc'], ims_dir + "/double_acc.png")
         Plotter.plot_double_loss(database['train loss'], database['val loss'], ims_dir + "/double_loss.png")
 
-        logger.info(f"saved checkpoints to {checkpoints_dir}")
+        self.logger.info(f"saved checkpoints to {checkpoints_dir}")
 
     def predict(self, dataloader):
         since = time.time()
@@ -389,9 +382,9 @@ class Trainer:
 
         acc = running_corrects / len(dataloader.dataset)
 
-        logger.info(f"Test set accuracy: {acc:4f}")
+        self.logger.info(f"Test set accuracy: {acc:4f}")
         time_elapsed = time.time() - since
-        logger.info(f"Inference on test set took: {time_elapsed:4f}")
+        self.logger.info(f"Inference on test set took: {time_elapsed:4f}")
         return labs, outs
 
     def save_metrics(self, labs, outs, save_path):
@@ -419,26 +412,26 @@ class Trainer:
         cm_path = os.path.join(os.path.dirname(save_path), "cm.png")
         Plotter.plot_cm(y_test, y_pred, class_list, cm_path)
 
-        logger.info(f'Accuracy: {accuracy_score(y_test, y_pred):.4f}')
-        logger.info("Micro Precision: "
-                    + f"{precision_score(y_test, y_pred, average='micro'):.4f}")
-        logger.info("Micro Recall: "
-                    + f"{recall_score(y_test, y_pred, average='micro'):.4f}")
-        logger.info("Micro F1-score: "
-                    + f"{f1_score(y_test, y_pred, average='micro'):.4f}")
-        logger.info("Macro Precision: "
-                    + f"{precision_score(y_test, y_pred, average='macro'):.4f}")
-        logger.info("Macro Recall: "
-                    + f"{recall_score(y_test, y_pred, average='macro'):.4f}")
-        logger.info("Macro F1-score: "
-                    + f"{f1_score(y_test, y_pred, average='macro'):.4f}")
-        logger.info("Weighted Precision: "
-                    + f"{precision_score(y_test, y_pred, average='weighted'):.4f}")
-        logger.info("Weighted Recall: "
-                    + f"{recall_score(y_test, y_pred, average='weighted'):.4f}")
-        logger.info("Weighted F1-score: "
-                    + f"{f1_score(y_test, y_pred, average='weighted'):.4f}")
-        logger.info(classification_report(
+        self.logger.info(f'Accuracy: {accuracy_score(y_test, y_pred):.4f}')
+        self.logger.info("Micro Precision: "
+                         + f"{precision_score(y_test, y_pred, average='micro'):.4f}")
+        self.logger.info("Micro Recall: "
+                         + f"{recall_score(y_test, y_pred, average='micro'):.4f}")
+        self.logger.info("Micro F1-score: "
+                         + f"{f1_score(y_test, y_pred, average='micro'):.4f}")
+        self.logger.info("Macro Precision: "
+                         + f"{precision_score(y_test, y_pred, average='macro'):.4f}")
+        self.logger.info("Macro Recall: "
+                         + f"{recall_score(y_test, y_pred, average='macro'):.4f}")
+        self.logger.info("Macro F1-score: "
+                         + f"{f1_score(y_test, y_pred, average='macro'):.4f}")
+        self.logger.info("Weighted Precision: "
+                         + f"{precision_score(y_test, y_pred, average='weighted'):.4f}")
+        self.logger.info("Weighted Recall: "
+                         + f"{recall_score(y_test, y_pred, average='weighted'):.4f}")
+        self.logger.info("Weighted F1-score: "
+                         + f"{f1_score(y_test, y_pred, average='weighted'):.4f}")
+        self.logger.info(classification_report(
             y_test, y_pred, target_names=class_list,
             digits=4)
         )
