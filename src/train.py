@@ -1,4 +1,4 @@
-from modules.models import Trainer, Dataset, TrainingArguments, Model
+from modules import Trainer, Dataset, TrainingArguments, Model
 
 import torch.nn as nn
 import argparse

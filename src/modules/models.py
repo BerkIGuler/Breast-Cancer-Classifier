@@ -1,5 +1,5 @@
-from utils import Plotter
-import logger
+from modules.utils import Plotter
+import modules.logger as logger
 
 import torch
 import torch.nn as nn
