@@ -1,6 +1,7 @@
 #!/bin/bash
 
 python3 train.py --dataset breast_cancer \
+                 --log_path ./log \
                  --model b2 \
                  --num_epochs 500 \
                  --feature_extract 0 \
