@@ -15,7 +15,7 @@ def parse_args():
     parser.add_argument('--model', 
                         type=str, 
                         required=True)
-    parser.add_argument('--num_epochs',
+    parser.add_argument('--num_steps',
                         type=int,
                         default=20)
     parser.add_argument('--feature_extract',

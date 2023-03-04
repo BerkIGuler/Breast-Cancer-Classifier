@@ -3,6 +3,29 @@ import numpy as np
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 
+class Statistics:
+	def __init__(self, columns: list, init_vals: list = None):
+		stats = {}
+		for i in range(len(columns)):
+			if init_vals:
+				assert len(columns) == len(init_vals), "columns len not equal to init_vals length"
+				if isinstance(init_vals[i], list):
+					stats[columns[i]] = init_vals[i]
+				else:
+					raise ValueError(f"Column data type expected list, given {type(init_vals[i])}")
+			else:
+				self.stats = stats[columns[i]] = []
+		self.__stats = stats
+
+	def add_single_data_entry(self, col_names: list, col_data: list):
+		assert len(col_names) == len(col_data), "columns len not equal to init_vals length"
+		for i in range(len(col_names)):
+			self.__stats[col_names[i]].append(col_data[i])
+
+	def get_statistics(self) -> dict:
+		return self.__stats
+
+
 class Plotter:
 
 	@staticmethod

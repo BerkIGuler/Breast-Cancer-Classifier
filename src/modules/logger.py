@@ -29,4 +29,5 @@ def init_logger(args, name):
 
 
 def get_global_logger(args, name=None):
+    logging.root.setLevel(logging.NOTSET)
     return init_logger(args, name)
