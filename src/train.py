@@ -21,8 +21,8 @@ def parse_args():
     parser.add_argument('--feature_extract',
                         type=int,
                         default=0,
-                        help="Flag for feature extracting. When False, we finetune the whole model, \
-                              when True we only update the reshaped layer params")
+                        help="When False, finetune the whole model, \
+                              when True only update the final classifier params.")
     parser.add_argument('--num_classes',
                         type=int,
                         required=True)

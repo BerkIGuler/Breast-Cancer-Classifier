@@ -213,6 +213,7 @@ class Trainer:
         self.model = model_instance
         self.logger = logger.get_global_logger(args, name=__name__)
         self.logger.info(f"training device set as: {self.device}")
+        self.args = args
 
     def train(self):
         since = time.time()
@@ -436,4 +437,6 @@ class Trainer:
                 y_test, y_pred, target_names=class_list,
                 digits=4)
             )
-            
+
+            # save args to metrics.txt
+            f_out.write(f"/n/n/n{self.args}/n")

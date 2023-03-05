@@ -31,16 +31,16 @@ class Plotter:
 	@staticmethod
 	def plot_simple_loss(loss_history, path):
 		plt.figure(figsize=(12, 12))
-		plt.plot((np.arange(len(loss_history)) + 1) * 100, loss_history)
-		plt.xlabel("Iteration", fontsize=12)
+		plt.plot((np.arange(len(loss_history)) + 1), loss_history)
+		plt.xlabel("Step", fontsize=12)
 		plt.ylabel("Cross-Entropy Loss", fontsize=12)
 		plt.savefig(path)
 
 	@staticmethod
 	def plot_simple_acc(acc_history, path):
 		plt.figure(figsize=(12, 12))
-		plt.plot((np.arange(len(acc_history)) + 1) * 100, acc_history)
-		plt.xlabel("Iteration", fontsize=12)
+		plt.plot((np.arange(len(acc_history)) + 1), acc_history)
+		plt.xlabel("Step", fontsize=12)
 		plt.ylabel("Accuracy", fontsize=12)
 		plt.savefig(path)
 
@@ -48,14 +48,14 @@ class Plotter:
 	def plot_double_acc(acc_history_train, acc_history_val, path):
 		plt.figure(figsize=(12, 12))
 		plt.plot(
-			(np.arange(len(acc_history_train)) + 1) * 100,
+			(np.arange(len(acc_history_train)) + 1),
 			acc_history_train, color='b', label="Train"
 		)
 		plt.plot(
-			(np.arange(len(acc_history_val)) + 1) * 100,
+			(np.arange(len(acc_history_val)) + 1),
 			acc_history_val, color='r', linestyle="--", label="Test"
 		)
-		plt.xlabel("Iteration", fontsize=12)
+		plt.xlabel("Step", fontsize=12)
 		plt.ylabel("Accuracy", fontsize=12)
 		plt.legend(loc="lower right", fontsize=10)
 		plt.savefig(path)
@@ -64,14 +64,14 @@ class Plotter:
 	def plot_double_loss(loss_history_train, loss_history_val,  path):
 		plt.figure(figsize=(12, 12))
 		plt.plot(
-			(np.arange(len(loss_history_train)) + 1) * 100,
+			(np.arange(len(loss_history_train)) + 1),
 			loss_history_train, color='b', label="Train"
 		)
 		plt.plot(
-			(np.arange(len(loss_history_val)) + 1) * 100,
+			(np.arange(len(loss_history_val)) + 1),
 			loss_history_val, color='r', linestyle="--", label="Test"
 		)
-		plt.xlabel("Iteration", fontsize=12)
+		plt.xlabel("Step", fontsize=12)
 		plt.ylabel("Cross Entropy Loss", fontsize=12)
 		# plt.ylim([0, 1])
 		plt.legend(loc="lower left", fontsize=10)
