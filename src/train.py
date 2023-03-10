@@ -52,6 +52,10 @@ def parse_args():
                         type=int,
                         default=100,
                         help="evaluate model on test set every eval_freq iterations")
+    parser.add_argument('--k_fold',
+                        type=int,
+                        default=0,
+                        help="fold size")
     _args = parser.parse_args()
 
     return _args
@@ -64,7 +68,10 @@ def main(args):
     dataset = Dataset(args, training_args, model)
     test_dataloader = dataset.get_test_dataloader()
     trainer = Trainer(args, training_args, dataset, model)
-    training_stats_database, best_acc = trainer.train()
+    if args.k_fold:
+        training_stats_database, best_acc = trainer.train_k_fold()
+    else:
+        training_stats_database, best_acc = trainer.train()
     trainer.save_checkpoints(training_stats_database, best_acc, test_dataloader)
 
 

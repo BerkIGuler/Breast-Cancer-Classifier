@@ -8,9 +8,11 @@ import numpy as np
 from torchvision import datasets, models, transforms
 import time
 import os
+import glob
 import copy
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.metrics import classification_report
+from sklearn.model_selection import KFold
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -119,6 +121,7 @@ class TrainingArguments:
             args.lr, betas=(0.9, 0.999), eps=1e-08)
         self.patience = args.patience
         self.evaluate_every_n_iter = args.eval_freq
+        self.args = args
 
 
 class Dataset:
@@ -132,6 +135,7 @@ class Dataset:
         self.dataset_path = self._get_dataset_path(args.dataset)
         self.dataloaders = self._get_data_loaders()
         self.logger = logger.get_global_logger(args, name=__name__)
+        self.args = args
 
     def _get_data_transforms(self, apply_augmentation):
         if apply_augmentation == 1:
@@ -150,6 +154,12 @@ class Dataset:
                     transforms.ToTensor(),
                     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
                 ]),
+                'val': transforms.Compose([
+                    transforms.Resize(self.model.input_size),
+                    transforms.CenterCrop(self.model.input_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                ])
             }
         elif apply_augmentation == 0:
             data_transforms = {
@@ -160,6 +170,12 @@ class Dataset:
                     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
                 ]),
                 'test': transforms.Compose([
+                    transforms.Resize(self.model.input_size),
+                    transforms.CenterCrop(self.model.input_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                ]),
+                'val': transforms.Compose([
                     transforms.Resize(self.model.input_size),
                     transforms.CenterCrop(self.model.input_size),
                     transforms.ToTensor(),
@@ -179,13 +195,39 @@ class Dataset:
         return data_path
 
     def _get_data_loaders(self):
-        image_datasets = {x: datasets.ImageFolder(
-            os.path.join(self.dataset_path, x),
-            self.data_transforms[x]) for x in ['train', 'test']}
-        dataloaders = {x: torch.utils.data.DataLoader(
-            image_datasets[x], batch_size=self.training_args.batch_size,
-            shuffle=True, num_workers=self.num_workers) for x in ['train', 'test']}
-        return dataloaders
+
+        train_dataset = datasets.ImageFolder(
+            os.path.join(self.dataset_path, "train"),
+            self.data_transforms["train"])
+        val_dataset = datasets.ImageFolder(
+            os.path.join(self.dataset_path, "val"),
+            self.data_transforms["val"])
+
+        if self.args.k_fold:
+            train_size = len(
+                glob.glob(
+                    os.path.join(os.path.join(self.dataset_path, "train"), "*.png")
+                )
+            )
+            splits = KFold(n_splits=self.args.k_fold, shuffle=True, random_state=42)
+            for fold_no, (train_inds, val_inds) in enumerate(splits.split(np.arange(train_size))):
+                train_sampler = torch.utils.data.SubsetRandomSampler(train_inds)
+                val_sampler = torch.utils.data.SubsetRandomSampler(val_inds)
+                train_dataloader = torch.utils.data.DataLoader(
+                    train_dataset, batch_size=self.training_args.batch_size,
+                    shuffle=True, num_workers=self.num_workers, sampler=train_sampler)
+                val_dataloader = torch.utils.data.DataLoader(
+                    train_dataset, batch_size=self.training_args.batch_size,
+                    shuffle=True, num_workers=self.num_workers, sampler=val_sampler)
+                yield {"train": train_dataloader, "val": val_dataloader}
+        else:
+            train_dataloader = torch.utils.data.DataLoader(
+                train_dataset, batch_size=self.training_args.batch_size,
+                shuffle=True, num_workers=self.num_workers)
+            val_dataloader = torch.utils.data.DataLoader(
+                val_dataset, batch_size=self.training_args.batch_size,
+                shuffle=True, num_workers=self.num_workers)
+            return {"train": train_dataloader, "val": val_dataloader}
 
     def get_test_dataloader(self):
         # Create test dataset and dataloader
@@ -215,113 +257,157 @@ class Trainer:
         self.logger.info(f"training device set as: {self.device}")
         self.args = args
 
+        self._best_loss = MAX_LOSS
+        self._patience_left = self.training_args.patience
+        self._best_loss_acc = 0
+        self._quit_flag = False
+
+        self._running_loss_train = 0.0
+        self._running_corrects_train = 0
+        self._num_iter_train = 0
+        self._best_model_wts = copy.deepcopy(self.model.model.state_dict())
+
+        self._stats = Statistics(columns=['train loss', 'val loss', 'train acc', 'val acc'])
+
+    def _reinit_state(self):
+
+        self._best_loss = MAX_LOSS
+        self._patience_left = self.training_args.patience
+        self._best_loss_acc = 0
+        self._quit_flag = False
+
+        self._running_loss_train = 0.0
+        self._running_corrects_train = 0
+        self._num_iter_train = 0
+        self._best_model_wts = copy.deepcopy(self.model.model.state_dict())
+
+        self._stats = Statistics(columns=['train loss', 'val loss', 'train acc', 'val acc'])
+
+    def _set_quit_flag(self, value):
+        self._quit_flag = value
+
     def train(self):
         since = time.time()
-
-        stats = Statistics(columns=['train loss', 'val loss', 'train acc', 'val acc'])
-        
-        best_model_wts = copy.deepcopy(self.model.model.state_dict())
-        best_loss = MAX_LOSS
-        best_loss_acc = 0
-        remaining_patience = self.training_args.patience
-        quit_flag = False
-
-        running_loss_train = 0.0
-        running_corrects_train = 0
-        num_iter_train = 0
-
+        self._set_quit_flag(value=False)
         while True:
-            if quit_flag:
-                break
-
-            for inputs, labels in self.dataset.dataloaders["train"]:
-
-                if num_iter_train >= self.training_args.num_steps:
-                    quit_flag = True
+            self._train(self.dataset.dataloaders)
+            if self._num_iter_train % self.training_args.evaluate_every_n_iter == 0:
+                self._validate(self.dataset.dataloaders)
+                if self._quit_flag:
                     break
-
-                self.model.model.train()
-                inputs = inputs.to(self.device)
-                labels = labels.to(self.device)
-
-                with torch.set_grad_enabled(True):
-                    self.training_args.optimizer.zero_grad()
-                    if self.model.model_name == "inception":
-                        outputs, aux_outputs = self.model.model(inputs)
-                        loss1 = self.training_args.criterion(outputs, labels)
-                        loss2 = self.training_args.criterion(aux_outputs, labels)
-                        loss = loss1 + 0.4*loss2
-                    else:
-                        outputs = self.model.model(inputs)
-                        loss = self.training_args.criterion(outputs, labels)
-                    loss.backward()
-                    self.training_args.optimizer.step()
-
-                _, preds = torch.max(outputs, dim=1)
-                running_loss_train += loss.item() * inputs.size(0)
-                running_corrects_train += torch.sum(preds == labels.data)
-                num_iter_train += 1
-                if num_iter_train % self.training_args.evaluate_every_n_iter == 0:
-                    self.model.model.eval()
-                    if remaining_patience <= 0:
-                        quit_flag = True
-                        break
-                    running_loss_test = 0.0
-                    running_corrects_test = 0
-                    for test_inputs, test_labels in self.dataset.dataloaders["test"]:
-                        test_inputs = test_inputs.to(self.device)
-                        test_labels = test_labels.to(self.device)
-
-                        with torch.no_grad():
-                            outputs = self.model.model(test_inputs)
-                            loss = self.training_args.criterion(outputs, test_labels)
-                            _, preds = torch.max(outputs, 1)
-
-                        running_loss_test += loss.item() * test_inputs.size(0)
-                        running_corrects_test += torch.sum(preds == test_labels.data)
-
-                    iter_loss_test = running_loss_test \
-                        / (len(self.dataset.dataloaders["test"].dataset))
-                    iter_acc_test = running_corrects_test \
-                        / (len(self.dataset.dataloaders["test"].dataset))
-                    iter_loss_train = running_loss_train \
-                        / (self.training_args.evaluate_every_n_iter * self.training_args.batch_size)
-                    iter_acc_train = running_corrects_train \
-                        / (self.training_args.evaluate_every_n_iter * self.training_args.batch_size)
-
-                    running_loss_train = 0.0
-                    running_corrects_train = 0
-
-                    if iter_loss_test < best_loss:
-                        best_loss = iter_loss_test
-                        best_loss_acc = iter_acc_test
-                        best_model_wts = copy.deepcopy(self.model.model.state_dict())
-                        remaining_patience = self.training_args.patience
-                    else:
-                        remaining_patience -= 1
-
-                    stats.add_single_data_entry(
-                        col_names=['train loss', 'val loss', 'train acc', 'val acc'],
-                        col_data=[iter_loss_train,
-                                  iter_loss_test,
-                                  iter_acc_train.cpu().numpy(),
-                                  iter_acc_test.cpu().numpy()
-                        ]
-                    )
-
-                    print(f"ITER {num_iter_train}, DATASET {self.dataset.dataset_name}")
-                    print(f"Training Set\t\t Accuracy: {iter_acc_train:.4f}"
-                          + f"\t\t Loss: {iter_loss_train:.4f}")
-                    print(f"Test Set\t\t Accuracy: {iter_acc_test:.4f}\t\t"
-                          + f" Loss: {iter_loss_test:.4f}")
-                    print("remaining_patience:", remaining_patience)
 
         time_elapsed = time.time() - since
         self.logger.info(f'Training completed in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
-        self.logger.info(f'Best Test Acc: {best_loss_acc:.4f}')
-        self.model.model.load_state_dict(best_model_wts)
+        self.logger.info(f'Best val Acc: {self._best_loss_acc:.4f}')
+        self.model.model.load_state_dict(self._best_model_wts)
 
-        return stats.get_statistics(), best_loss_acc
+        return self._stats.get_statistics(), self._best_loss_acc
+
+    def _train(self, dataloaders):
+        self.model.model.train()
+        for inputs, labels in dataloaders["train"]:
+
+            if self._num_iter_train >= self.training_args.num_steps:
+                self._set_quit_flag(value=True)
+                break
+
+            inputs = inputs.to(self.device)
+            labels = labels.to(self.device)
+
+            with torch.set_grad_enabled(True):
+                self.training_args.optimizer.zero_grad()
+                if self.model.model_name == "inception":
+                    outputs, aux_outputs = self.model.model(inputs)
+                    loss1 = self.training_args.criterion(outputs, labels)
+                    loss2 = self.training_args.criterion(aux_outputs, labels)
+                    loss = loss1 + 0.4 * loss2
+                else:
+                    outputs = self.model.model(inputs)
+                    loss = self.training_args.criterion(outputs, labels)
+                loss.backward()
+                self.training_args.optimizer.step()
+
+            _, preds = torch.max(outputs, dim=1)
+            self._running_loss_train += loss.item() * inputs.size(0)
+            self._running_corrects_train += torch.sum(preds == labels.data)
+            self._num_iter_train += 1
+
+    def train_k_fold(self):
+        since = time.time()
+        for k, kth_dataloaders in self.dataset.dataloaders["train"]:
+            self.logger.info(f"Training on fold {k}")
+            self._reinit_state()
+            while True:
+                if self._quit_flag:
+                    break
+                self._train(kth_dataloaders)
+                if self._num_iter_train % self.training_args.evaluate_every_n_iter == 0:
+                    self._validate(kth_dataloaders)
+                    if self._quit_flag:
+                        break
+
+        time_elapsed = time.time() - since
+        self.logger.info(f'Training completed in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+        self.logger.info(f'Best Test Acc: {self._best_loss_acc:.4f}')
+        self.model.model.load_state_dict(self._best_model_wts)
+
+        return self._stats.get_statistics(), self._best_loss_acc
+
+    def _validate(self, dataloaders):
+        self.model.model.eval()
+        if self._patience_left <= 0:
+            self._set_quit_flag(value=True)
+            return
+
+        running_loss_val = 0.0
+        running_corrects_val = 0
+        for val_inputs, val_labels in dataloaders["val"]:
+            val_inputs = val_inputs.to(self.device)
+            val_labels = val_labels.to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model.model(val_inputs)
+                loss = self.training_args.criterion(outputs, val_labels)
+                _, preds = torch.max(outputs, 1)
+
+            running_loss_val += loss.item() * val_inputs.size(0)
+            running_corrects_val += torch.sum(preds == val_labels.data)
+
+        iter_loss_val = running_loss_val \
+            / (len(self.dataset.dataloaders["val"].dataset))
+        iter_acc_val = running_corrects_val \
+            / (len(self.dataset.dataloaders["val"].dataset))
+        iter_loss_train = self._running_loss_train \
+            / (self.training_args.evaluate_every_n_iter * self.training_args.batch_size)
+        iter_acc_train = self._running_corrects_train \
+            / (self.training_args.evaluate_every_n_iter * self.training_args.batch_size)
+
+        self._running_loss_train = 0.0
+        self._running_corrects_train = 0
+
+        if iter_loss_val < self._best_loss:
+            self._best_loss = iter_loss_val
+            self._best_loss_acc = iter_acc_val
+            self._best_model_wts = copy.deepcopy(self.model.model.state_dict())
+            self._patience_left = self.training_args.patience
+        else:
+            self._patience_left -= 1
+
+        self._stats.add_single_data_entry(
+            col_names=['train loss', 'val loss', 'train acc', 'val acc'],
+            col_data=[iter_loss_train,
+                      iter_loss_val,
+                      iter_acc_train.cpu().numpy(),
+                      iter_acc_val.cpu().numpy()
+                      ]
+        )
+
+        print(f"ITER {self._num_iter_train}, DATASET {self.dataset.dataset_name}")
+        print(f"Training Set\t\t Accuracy: {iter_acc_train:.4f}"
+              + f"\t\t Loss: {iter_loss_train:.4f}")
+        print(f"Val Set\t\t Accuracy: {iter_acc_val:.4f}\t\t"
+              + f" Loss: {iter_loss_val:.4f}")
+        print("remaining_patience:", self._patience_left)
 
     def save_checkpoints(self, database, best_acc, test_dataloader):
         if self.dataset.apply_augmentation == 1:
@@ -340,11 +426,11 @@ class Trainer:
         os.makedirs(ims_dir, exist_ok=True)
 
         # save weights on disk
-        torch.save(self.model.model.state_dict(), checkpoints_dir + "/weights.pth")
+        torch.save(self._best_model_wts, checkpoints_dir + "/weights.pth")
 
         # save metrics
-        labs, outs = self.predict(test_dataloader)
-        self.save_metrics(labs, outs, metrics_path)
+        labs, outs = self._predict(test_dataloader)
+        self._save_metrics(labs, outs, metrics_path)
 
         Plotter.plot_simple_acc(database['train acc'], ims_dir + "/train_acc.png")
         Plotter.plot_simple_acc(database['val acc'], ims_dir + "/test_acc.png")
@@ -356,7 +442,7 @@ class Trainer:
 
         self.logger.info(f"saved checkpoints to {checkpoints_dir}")
 
-    def predict(self, dataloader):
+    def _predict(self, dataloader):
         since = time.time()
         labs = torch.zeros(len(dataloader.dataset), self.model.num_classes)
         outs = torch.zeros(len(dataloader.dataset), self.model.num_classes)
@@ -386,7 +472,7 @@ class Trainer:
         self.logger.info(f"Inference on test set took: {time_elapsed:4f}")
         return labs, outs
 
-    def save_metrics(self, labs, outs, save_path):
+    def _save_metrics(self, labs, outs, save_path):
         _, preds = torch.max(outs, 1)
         y_preds_one_hot = nn.functional.one_hot(preds, num_classes=self.model.num_classes)
 
@@ -401,9 +487,9 @@ class Trainer:
         single_labels = np.argmax(labels, axis=1)
         single_preds = np.argmax(y_preds_one_hot, axis=1)
 
-        self.save_stats(single_labels, single_preds, save_path)
+        self._save_stats(single_labels, single_preds, save_path)
 
-    def save_stats(self, y_test, y_pred, save_path):
+    def _save_stats(self, y_test, y_pred, save_path):
         class_list = []
         for i in range(self.model.num_classes):
             class_list.append(f"c-{i}")
@@ -439,4 +525,4 @@ class Trainer:
             )
 
             # save args to metrics.txt
-            f_out.write(f"/n/n/n{self.args}/n")
+            f_out.write(f"/n/n/n/n/n/n/{self.args}/n")
