@@ -126,6 +126,7 @@ class TrainingArguments:
 
 class Dataset:
     def __init__(self, args, training_args_instance, model_instance):
+        self.args = args
         self.training_args = training_args_instance
         self.apply_augmentation = args.augment
         self.model = model_instance
@@ -135,7 +136,6 @@ class Dataset:
         self.dataset_path = self._get_dataset_path(args.dataset)
         self.dataloaders = self._get_data_loaders()
         self.logger = logger.get_global_logger(args, name=__name__)
-        self.args = args
 
     def _get_data_transforms(self, apply_augmentation):
         if apply_augmentation == 1:
@@ -219,7 +219,7 @@ class Dataset:
                 val_dataloader = torch.utils.data.DataLoader(
                     train_dataset, batch_size=self.training_args.batch_size,
                     shuffle=True, num_workers=self.num_workers, sampler=val_sampler)
-                yield {"train": train_dataloader, "val": val_dataloader}
+                # yield {"train": train_dataloader, "val": val_dataloader}
         else:
             train_dataloader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=self.training_args.batch_size,
@@ -291,10 +291,8 @@ class Trainer:
         self._set_quit_flag(value=False)
         while True:
             self._train(self.dataset.dataloaders)
-            if self._num_iter_train % self.training_args.evaluate_every_n_iter == 0:
-                self._validate(self.dataset.dataloaders)
-                if self._quit_flag:
-                    break
+            if self._quit_flag:
+                break
 
         time_elapsed = time.time() - since
         self.logger.info(f'Training completed in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
@@ -332,6 +330,9 @@ class Trainer:
             self._running_corrects_train += torch.sum(preds == labels.data)
             self._num_iter_train += 1
 
+            if self._num_iter_train % self.training_args.evaluate_every_n_iter == 0:
+                self._validate(self.dataset.dataloaders)
+
     def train_k_fold(self):
         since = time.time()
         for k, kth_dataloaders in self.dataset.dataloaders["train"]:
@@ -350,8 +351,6 @@ class Trainer:
         self.logger.info(f'Training completed in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
         self.logger.info(f'Best Test Acc: {self._best_loss_acc:.4f}')
         self.model.model.load_state_dict(self._best_model_wts)
-
-        return self._stats.get_statistics(), self._best_loss_acc
 
     def _validate(self, dataloaders):
         self.model.model.eval()
@@ -409,11 +408,11 @@ class Trainer:
               + f" Loss: {iter_loss_val:.4f}")
         print("remaining_patience:", self._patience_left)
 
-    def save_checkpoints(self, database, best_acc, test_dataloader):
+    def save_checkpoints(self, test_dataloader):
         if self.dataset.apply_augmentation == 1:
-            tag = f"aug_{self.model.model_name}_{self.dataset.dataset_name}_{best_acc:2f}"
+            tag = f"aug_{self.model.model_name}_{self.dataset.dataset_name}_{self._best_loss:2f}"
         elif self.dataset.apply_augmentation == 0:
-            tag = f"{self.model.model_name}_{self.dataset.dataset_name}_{best_acc:2f}"
+            tag = f"{self.model.model_name}_{self.dataset.dataset_name}_{self._best_loss:2f}"
         else:
             raise ValueError("invalid --augment flag")
 
@@ -427,11 +426,14 @@ class Trainer:
 
         # save weights on disk
         torch.save(self._best_model_wts, checkpoints_dir + "/weights.pth")
+        self.model.model.load_state_dict(self._best_model_wts)
+        self.logger.info(f"Loaded the model with val loss {self._best_loss:.2f} for testing")
 
         # save metrics
         labs, outs = self._predict(test_dataloader)
         self._save_metrics(labs, outs, metrics_path)
 
+        database = self._stats.get_statistics()
         Plotter.plot_simple_acc(database['train acc'], ims_dir + "/train_acc.png")
         Plotter.plot_simple_acc(database['val acc'], ims_dir + "/test_acc.png")
         Plotter.plot_simple_loss(database['train loss'], ims_dir + "/train_loss.png")
@@ -469,7 +471,7 @@ class Trainer:
 
         self.logger.info(f"Test set accuracy: {acc:4f}")
         time_elapsed = time.time() - since
-        self.logger.info(f"Inference on test set took: {time_elapsed:4f}")
+        self.logger.info(f"Inference on test set took: {time_elapsed:4f}s")
         return labs, outs
 
     def _save_metrics(self, labs, outs, save_path):

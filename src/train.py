@@ -69,10 +69,10 @@ def main(args):
     test_dataloader = dataset.get_test_dataloader()
     trainer = Trainer(args, training_args, dataset, model)
     if args.k_fold:
-        training_stats_database, best_acc = trainer.train_k_fold()
+        trainer.train_k_fold()
     else:
-        training_stats_database, best_acc = trainer.train()
-    trainer.save_checkpoints(training_stats_database, best_acc, test_dataloader)
+        trainer.train()
+    trainer.save_checkpoints(test_dataloader)
 
 
 if __name__ == "__main__":

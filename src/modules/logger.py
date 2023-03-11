@@ -14,7 +14,7 @@ def init_logger(args, name):
     if not logger.handlers:
         c_handler = logging.StreamHandler()
         f_handler = logging.FileHandler(args.log_path)
-        c_handler.setLevel(logging.WARNING)
+        c_handler.setLevel(logging.INFO)
         f_handler.setLevel(logging.INFO)
 
         c_format = logging.Formatter(
